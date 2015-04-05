@@ -72,7 +72,7 @@ resource = RTResource(requestTrackerRestApiUrl, requestTrackerUsername, requestT
 import praw
 import time
 import sqlite3
-import sys
+import sys, traceback
 from datetime import datetime
 from datetime import timedelta  
 from pprint import pprint
@@ -162,6 +162,7 @@ def processModMail():
 			rootBody      = str(mail.body)
 			rootMessageId = str(mail.id) # Base 36, contains alphanumeric
 			rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
+			rootReplies   = mail.replies
 			
 			if rootAge < redditAbsoluteOldestModmailRootNodeDateToConsider:
 				continue
@@ -171,112 +172,41 @@ def processModMail():
 				print(debugText)
 				
 			# Has the current parent item been handled yet?  
-			sql = 'select TicketId from ' + sqliteDatabaseTablename + ' where ParentCommentId is null and CommentId = ?;'
-			sqlCursor.execute(sql, (rootMessageId,)) # [sic] you have to pass in a sequence.  
+			ticketId = getTicketIdForAlreadyProcessedRootMessage(rootMessageId)
 			
 			#If we dont find it, we need to add it in.
-			sqlrow = sqlCursor.fetchone()
-			if sqlrow == None:
+			if ticketId == None:
 				foundAllItems = False #	There is at least one thing that we didnt find.
 				
 				if debug:
 					print('Core message not found in system.  Processing.')
 					
-				# first put into ticket system but for now just insert into here.
-				postedSubject = 'Modmail - ' + rootAuthor + ' - ' + rootSubject
-				postedBody = 'Post from ' + rootAuthor + '\nResponse URL: ' + rootResponseUrl + '\nContents:\n' + rootBody
-				content = {
-					'content': {
-						'Queue': requestTrackerQueueToPostTo,
-						'Subject': postedSubject,
-						'Text': postedBody,
-					}
-				}
-				response = resource.post(path='ticket/new', payload=content,)
-				
-				# if this wasnt successful, the following statements will error out and send us down to the catch.
-				strTicket = (response.parsed[0][0][1]).split('/')[1]
-				ticketId = int(strTicket)
+				ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
 				
 				if debug:
-					debugText = 'Added ticket to ticket system - ticket id:  ' + strTicket
+					debugText = 'Added ticket to ticket system - ticket id:  ' + str(ticketId)
 					print(debugText)
 				
 				if ticketId < 1:
 					raise LookupError('Did not get back appropriate ticket id to store from ticket system')
 				
-				sql = 'INSERT INTO ' + sqliteDatabaseTablename + '(ParentCommentId, CommentId, TicketId) values (null, ?, ?);'
-				sqlCursor.execute(sql, (rootMessageId,ticketId))
-				sqlConn.commit
+				noteTheFactWeProcessedAMessageId(rootMessageId, None, ticketId)
 			else:
 				# check if this message is older than 30 days ago.
 				# if it is, stop and dont deep inspect the kids.
 				if check30Days and rootAge < epoch30daysago:
 					continue
 				
-				ticketId = sqlrow[0]
 				if debug:
 					print('Core message found in system already.')
 					
 			if debug:
 				print('Checking children that may exist.')
-				
 			
-			firstTimeWithReply = True
-				
 			# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
 			# Now that we have handled the parent, check for each of the children within this root parent.
-			for reply in mail.replies:
-				
-				if debug and firstTimeWithReply:
-					firstTimeWithReply = False
-					print('Found at least one reply to core message.')
-			
-				replyAuthor    = str(reply.author)
-				replyBody      = str(reply.body)
-				replyMessageId = str(reply.id) # Base 36, contains alphanumeric
-				
-				if debug:
-					debugText = 'Checking if message reply is handled yet.  Body:  ' + replyBody
-					print(debugText)
-				
-				# Has the current child item been handled yet?  
-				sql = 'select 1 from ' + sqliteDatabaseTablename + ' where ParentCommentId = ? and CommentId = ?;'
-				sqlCursor.execute(sql, (rootMessageId,replyMessageId))   
-				
-				#If we dont find it, we need to add it in.
-				sqlrow = sqlCursor.fetchone()
-				if sqlrow == None:
-					foundAllItems = False #	There is at least one thing that we didnt find.
-					
-					if debug:
-						print('Reply message not found in system.  Processing.')
-				
-					if debug:
-						debugText = 'Updating ticket found in our system:  ' + str(ticketId)
-						print(debugText)
-					
-					# first put into ticket system but for now just insert into here.
-					postedBody = 'Post from ' + replyAuthor + '\nContents:\n' + replyBody
-					params = {
-						'content': {
-							'Action': 'comment',
-							'Text': postedBody,
-						}
-					}
-					ticketUpdatePath = 'ticket/' + str(ticketId) + '/comment'
-					response = resource.post(path=ticketUpdatePath, payload=params,)
-					
-					# if this wasnt successful, the type will not be 200 and we will be sent down to the except.
-					if response.status_int != 200:
-						raise LookupError('Was unable to find/update expected ticket.')
-					
-					sql = 'INSERT INTO ' + sqliteDatabaseTablename + '(ParentCommentId, CommentId, TicketId) values (?, ?, null);'
-					sqlCursor.execute(sql, (rootMessageId,replyMessageId))
-					sqlConn.commit
-				else:
-					if debug:
-						print('Reply message already found in system.')
+			allRepliesHandled = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies)
+			foundAllItems = foundAllItems and allRepliesHandled
 			
 			# If there were no changes and we arnt doing our 30 day check, then get out.
 			if foundAllItems and not check30Days:
@@ -288,9 +218,152 @@ def processModMail():
 		l = str(sys.exc_traceback.tb_lineno)
 		error = str(datetime.utcnow()) + ' - Error when attempting to review modmail on line number ' + l + '.  Exception:  ' + e
 		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+			
 		pass
 	closeSqlConnections()
 	openSqlConnections()
+	
+def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
+	sql = ''
+	
+	if parentMessageId == None:
+		sql = 'INSERT INTO ' + sqliteDatabaseTablename + '(ParentCommentId, CommentId, TicketId) values (null, ?, ?);'
+		sqlCursor.execute(sql, (messageId,ticketId))
+	else:
+		sql = 'INSERT INTO ' + sqliteDatabaseTablename + '(ParentCommentId, CommentId, TicketId) values (?, ?, null);'
+		sqlCursor.execute(sql, (parentMessageId,messageId))
+		
+	
+	sqlConn.commit
+
+def getHasReplyBeenProcessed(rootMessageId, replyMessageId):
+	processed = True
+	
+	# Has the current child item been handled yet?  
+	sql = 'select 1 from ' + sqliteDatabaseTablename + ' where ParentCommentId = ? and CommentId = ?;'
+	sqlCursor.execute(sql, (rootMessageId,replyMessageId))   
+	
+	#If we dont find it, we need to add it in.
+	sqlrow = sqlCursor.fetchone()
+	if sqlrow == None:
+		processed = False
+	
+	return processed
+	
+def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
+	ticketId = None
+	
+	sql = 'select TicketId from ' + sqliteDatabaseTablename + ' where ParentCommentId is null and CommentId = ?;'
+	sqlCursor.execute(sql, (rootMessageId,)) # [sic] you have to pass in a sequence.  
+	
+	sqlrow = sqlCursor.fetchone()
+	if sqlrow != None:
+		ticketId = sqlrow[0]
+	
+	return ticketId
+
+# In reply object
+# out - True/False - True iff all children found were ones we already processed
+def handleMessageReplies(debug, ticketId, rootMessageId, replies):
+	firstTimeWithReply = True
+	foundAllItems = True
+	
+	for reply in replies:
+					
+		if debug and firstTimeWithReply:
+			firstTimeWithReply = False
+			print('Found at least one reply to core message.')
+
+		replyAuthor    = str(reply.author)
+		replyBody      = str(reply.body)
+		replyMessageId = str(reply.id) # Base 36, contains alphanumeric
+		
+		if debug:
+			debugText = 'Checking if message reply is handled yet.  Body:  ' + replyBody
+			print(debugText)
+		
+		# Has the current child item been handled yet?  
+		alreadyProcessed = getHasReplyBeenProcessed(rootMessageId, replyMessageId)
+		
+		if not alreadyProcessed:
+			foundAllItems = False #	There is at least one thing that we didnt find.
+			
+			if debug:
+				print('Reply message not found in system.  Processing.')
+		
+			if debug:
+				debugText = 'Updating ticket found in our system:  ' + str(ticketId)
+				print(debugText)
+			
+			addTicketComment(ticketId, replyAuthor, replyBody)
+			
+			noteTheFactWeProcessedAMessageId(replyMessageId, rootMessageId, None)
+		else:
+			if debug:
+				print('Reply message already found in system.')
+	
+	return foundAllItems
+	
+# no error handling, let errors bubble up.
+# in - message information
+# out integer ticket id.
+def createTicket(author, subject, body, modmailMessageUrl):
+	postedSubject = 'Modmail - ' + author + ' - ' + subject
+	postedBody = 'Post from ' + author + '\nResponse URL: ' + modmailMessageUrl + '\nContents:\n' + body
+	content = {
+		'content': {
+			'Queue': requestTrackerQueueToPostTo,
+			'Subject': postedSubject,
+			'Text': postedBody,
+		}
+	}
+	response = resource.post(path='ticket/new', payload=content,)
+
+	# if this wasnt successful, the following statements will error out and send us down to the catch.
+	strTicket = (response.parsed[0][0][1]).split('/')[1]
+	ticketId = int(strTicket)
+	return ticketId
+	
+# no error handling, let errors bubble up.
+# in - message information
+# out None
+def addTicketComment(ticketId, author, body):
+	postedBody = 'Post from ' + author + '\nContents:\n' + body
+	params = {
+		'content': {
+			'Action': 'comment',
+			'Text': postedBody,
+		}
+	}
+	ticketUpdatePath = 'ticket/' + str(ticketId) + '/comment'
+	response = resource.post(path=ticketUpdatePath, payload=params,)
+	
+	# if this wasnt successful, the type will not be 200 and we will be sent down to the except.
+	if response.status_int != 200:
+		raise LookupError('Was unable to find/update expected ticket.')
 	
 def mainloop():
 	
