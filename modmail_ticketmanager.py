@@ -42,6 +42,8 @@ redditPassword = ''
 redditSleepIntervalInSecondsBetweenRequests = 5
 redditMinutesBetween30DayCheck = 30
 redditSubredditToMonitor = '' # in text, like civcraft
+redditAbsoluteOldestModmailRootNodeDateToConsider = 1420070400 # Epoch Notation for Jan 01 2015.  
+															   # If you want to pull in tons and tons of history you could make this 0.
 
 # SqlLite Information
 sqliteDatabaseFilename = 'ModMailTicketManager.sqlite' # If this doesnt exist, it creates.
@@ -114,6 +116,13 @@ def processModMail():
 	global nextProcess30DaysInterval
 
 	# Should we perform checks over the last 30 days of messages?  Expensive!
+	# basically, if this is set, we have a different from normal behavior of
+	# when to quit (and what to do).
+	# Specifically, we will normally stop looking at modmail after the most recent
+	# modmail that completely matches something we have already logged.  If this flag
+	# is set, we will iterate over every single -root- item in the modmail system but
+	# we will only look for child changes for items that have a root creation date 
+	# that is less than 30 days ago.
 	check30Days = False
 	
 	openSqlConnections()
@@ -147,16 +156,15 @@ def processModMail():
 				
 			foundAllItems = True
 			
+			rootAge       = int(round(float(str(mail.created_utc))))
 			rootAuthor    = str(mail.author)
 			rootSubject   = str(mail.subject)
 			rootBody      = str(mail.body)
 			rootMessageId = str(mail.id) # Base 36, contains alphanumeric
-			rootAge       = int(round(float(str(mail.created_utc))))
 			rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
 			
-			# Out - If we are checking items from 30 days ago, and age is < 30 days, then exit.
-			if check30Days and rootAge < epoch30daysago:
-				break
+			if rootAge < redditAbsoluteOldestModmailRootNodeDateToConsider:
+				continue
 				
 			if debug:
 				debugText = 'Checking if core message is handled yet.  Subject:  ' + rootSubject
@@ -201,6 +209,11 @@ def processModMail():
 				sqlCursor.execute(sql, (rootMessageId,ticketId))
 				sqlConn.commit
 			else:
+				# check if this message is older than 30 days ago.
+				# if it is, stop and dont deep inspect the kids.
+				if check30Days and rootAge < epoch30daysago:
+					continue
+				
 				ticketId = sqlrow[0]
 				if debug:
 					print('Core message found in system already.')
@@ -265,7 +278,7 @@ def processModMail():
 					if debug:
 						print('Reply message already found in system.')
 			
-			
+			# If there were no changes and we arnt doing our 30 day check, then get out.
 			if foundAllItems and not check30Days:
 				break
 	except:
