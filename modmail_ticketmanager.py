@@ -22,7 +22,7 @@
 #	Note:  This order-by behavior we are exploiting is NOT defined, so while likely to continue
 #	in the future, we still have to get all messages every once in a while.  By default, thats 
 #	every 30 minutes (configurable).  When that comes up, we will process all modmail messages 
-#	up to 30 days in the past.  
+#	with the newest reply > up to 8 days in the past (configureable).  
 #
 #	We keep track of items we have already processed by storing it in a sqlite database that you
 #	define the name of.  It is expected that you will handle backing up this item on an intermittent
@@ -144,7 +144,7 @@ def processModMail():
 		
 		inExtendedValidationMode = False
 		
-		# see if its time to process a 30 day interval.
+		# see if its time to process in extended validation mode.
 		period = (datetime.now() - datetime(1970,1,1))
 		if (nextExtendedValidationInterval < (period.days * 1440 + period.seconds)):
 			print('Processing in ExtendedValidationMode')
