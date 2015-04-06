@@ -40,8 +40,24 @@ debug = False #If set to True then will output a very large amount of data allow
 redditUsername = ''
 redditPassword = ''
 redditSleepIntervalInSecondsBetweenRequests = 5
-redditMinutesBetween30DayCheck = 30
+# The MinutesBetweenExtendedValidationMode and MaximumAmountOfDaysToAllowLookbackForMissingReplies are pretty tightly coupled concepts.
+# Since we process things from newest to oldest, we are using a shortcut that lets us know when to quit (when we hit the first message 
+#	that is already 100% processed we can end for now).  This is great for speeding up processing but horrible when you realize that
+#	reddit fails quite a lot.  This means we could process the newest message but we havent processed messages after that leaving
+#	those replies to be 'lost.'  This means every-so-often we need to look back over a good chunk of messages to make sure we have 
+# 	everything we should.  We would automatically 'find' the messages if anything replied to the chain but if nothing does
+#	they will be picked up in the extended validation.  Given the default for this is ~30 minutes, the lookback being a single day 
+#	would suffice.  We are setting the default to 8 to allow a downtime interval.  This process can recover from downtime up to 
+#	~7 ish days with this setting.  If we have a downtime event > 7 days then you either need to change this variable or accept
+#	that some replies could be missing until someone touches that thread again.  Downtime > a week should be rare one would hope.
+redditMinutesBetweenExtendedValidationMode = 30
+redditMaximumAmountOfDaysToAllowLookbackForMissingReplies = 8 
 redditSubredditToMonitor = '' # in text, like civcraft
+# Explicit limiter on the number of modmails to pull.  This is the max you will ever get - you won't even see threads if they
+#	exist beyond this limit.  Change this if you feel the need.  This is not -replies- in a thread but the master / root threads.
+# 	A larger number will let you track more threads initially but this will slow you down for each processing cycle.  This should
+#	be set just high enough for your uses and needs to be set by whoever owns a subreddit.
+redditMaximumNumberOfRootThreadsToLookBack = 5000
 redditAbsoluteOldestModmailRootNodeDateToConsider = 1420070400 # Epoch Notation for Jan 01 2015.  
 															   # If you want to pull in tons and tons of history you could make this 0.
 
@@ -82,10 +98,13 @@ prawUserAgent = 'ModMailTicketCreator v0.01 by /u/Pentom'
 def init():
 	global sqlConn
 	global sqlCursor
-	global nextProcess30DaysInterval
+	global nextExtendedValidationInterval
 	
-	period = (datetime.now() + timedelta(minutes=redditMinutesBetween30DayCheck) - datetime(1970,1,1))
-	nextProcess30DaysInterval = period.days * 1440 + period.seconds
+	sqlConn = None
+	sqlCursor = None
+	
+	period = (datetime.now() + timedelta(minutes=redditMinutesBetweenExtendedValidationMode) - datetime(1970,1,1))
+	nextExtendedValidationInterval = period.days * 1440 + period.seconds
 	
 	openSqlConnections()
 	sql = 'CREATE TABLE IF NOT EXISTS ' + sqliteDatabaseTablename + '(CommentId TEXT PRIMARY KEY, ParentCommentId TEXT, TicketId INTEGER, CHECK((ParentCommentId is null and TicketId is not null) OR (ParentCommentId is not null and TicketId is null)));'
@@ -95,13 +114,16 @@ def init():
 	sql = 'CREATE UNIQUE INDEX IF NOT EXISTS UQ_' + sqliteDatabaseTablename + '_ParentCommentId_CommentId ON ' + sqliteDatabaseTablename + '(ParentCommentId, CommentId);'
 	sqlCursor.execute(sql)
 	closeSqlConnections()
+	setGlobalVariablesForExtendedValidationMode()
 	
 	
 def openSqlConnections():
 	global sqlConn
 	global sqlCursor
-	sqlConn = sqlite3.connect(sqliteDatabaseFilename)
-	sqlCursor = sqlConn.cursor()
+	if sqlConn == None:
+		sqlConn = sqlite3.connect(sqliteDatabaseFilename)
+	if sqlCursor == None:
+		sqlCursor = sqlConn.cursor()
 	
 def closeSqlConnections():
 	global sqlConn
@@ -113,103 +135,35 @@ def closeSqlConnections():
 	sqlConn = None
 	
 def processModMail():
-	global nextProcess30DaysInterval
-
-	# Should we perform checks over the last 30 days of messages?  Expensive!
-	# basically, if this is set, we have a different from normal behavior of
-	# when to quit (and what to do).
-	# Specifically, we will normally stop looking at modmail after the most recent
-	# modmail that completely matches something we have already logged.  If this flag
-	# is set, we will iterate over every single -root- item in the modmail system but
-	# we will only look for child changes for items that have a root creation date 
-	# that is less than 30 days ago.
-	check30Days = False
-	
+	global nextExtendedValidationInterval
 	openSqlConnections()
-	#Helping debug output.
-	firstTime = True
-	debugText = ''
-	period = (datetime.now() - timedelta(days=30) - datetime(1970,1,1))
-	epoch30daysago = period.days * 1440 + period.seconds
-	
-	# see if its time to process a 30 day interval.
-	period = (datetime.now() - datetime(1970,1,1))
-	if (nextProcess30DaysInterval < (period.days * 1440 + period.seconds)):
-		print('Procesing 30 day interval.')
-		period = (datetime.now() + timedelta(minutes=redditMinutesBetween30DayCheck) - datetime(1970,1,1))
-		nextProcess30DaysInterval = period.days * 1440 + period.seconds
-		check30Days = True
 	
 	try:
-	
 		r = praw.Reddit(user_agent=prawUserAgent)
 		r.login(redditUsername,redditPassword)
+		
+		inExtendedValidationMode = False
+		
+		# see if its time to process a 30 day interval.
+		period = (datetime.now() - datetime(1970,1,1))
+		if (nextExtendedValidationInterval < (period.days * 1440 + period.seconds)):
+			print('Processing in ExtendedValidationMode')
+			setGlobalVariablesForExtendedValidationMode()
+			period = (datetime.now() + timedelta(minutes=redditMinutesBetweenExtendedValidationMode) - datetime(1970,1,1))
+			nextExtendedValidationInterval = period.days * 1440 + period.seconds
+			inExtendedValidationMode = True
 		
 		if debug:
 			print('Logged into Reddit.')
 
-		sub = r.get_subreddit('testmod')
-		for mail in sub.get_mod_mail(limit=None):
-			if firstTime and debug:
-				firstTime = False
-				print('Found at least one item in modmail.')
-				
-			foundAllItems = True
+		sub = r.get_subreddit(redditSubredditToMonitor)
+		for mail in sub.get_mod_mail(limit=redditMaximumNumberOfRootThreadsToLookBack):
 			
-			rootAge       = int(round(float(str(mail.created_utc))))
-			rootAuthor    = str(mail.author)
-			rootSubject   = str(mail.subject)
-			rootBody      = str(mail.body)
-			rootMessageId = str(mail.id) # Base 36, contains alphanumeric
-			rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
-			rootReplies   = mail.replies
+			# When we are processing a message, we have the information to know if we should continue
+			# processing.  This will keep returning true until we hit some message where we should hit falses.
+			shouldContinueProcessing = processModMailRootMessage(debug, mail, inExtendedValidationMode)
 			
-			if rootAge < redditAbsoluteOldestModmailRootNodeDateToConsider:
-				continue
-				
-			if debug:
-				debugText = 'Checking if core message is handled yet.  Subject:  ' + rootSubject
-				print(debugText)
-				
-			# Has the current parent item been handled yet?  
-			ticketId = getTicketIdForAlreadyProcessedRootMessage(rootMessageId)
-			
-			#If we dont find it, we need to add it in.
-			if ticketId == None:
-				foundAllItems = False #	There is at least one thing that we didnt find.
-				
-				if debug:
-					print('Core message not found in system.  Processing.')
-					
-				ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
-				
-				if debug:
-					debugText = 'Added ticket to ticket system - ticket id:  ' + str(ticketId)
-					print(debugText)
-				
-				if ticketId < 1:
-					raise LookupError('Did not get back appropriate ticket id to store from ticket system')
-				
-				noteTheFactWeProcessedAMessageId(rootMessageId, None, ticketId)
-			else:
-				# check if this message is older than 30 days ago.
-				# if it is, stop and dont deep inspect the kids.
-				if check30Days and rootAge < epoch30daysago:
-					continue
-				
-				if debug:
-					print('Core message found in system already.')
-					
-			if debug:
-				print('Checking children that may exist.')
-			
-			# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
-			# Now that we have handled the parent, check for each of the children within this root parent.
-			allRepliesHandled = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies)
-			foundAllItems = foundAllItems and allRepliesHandled
-			
-			# If there were no changes and we arnt doing our 30 day check, then get out.
-			if foundAllItems and not check30Days:
+			if not shouldContinueProcessing:
 				break
 	except:
 		# Errors will happen here, Reddit fails all the time.
@@ -246,6 +200,99 @@ def processModMail():
 	closeSqlConnections()
 	openSqlConnections()
 	
+def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessageEpochTimeUtc, inExtendedValidationMode):
+	# If the newest message is before our drop-dead oldest value, then we stop.  
+	#	(redditAbsoluteOldestModmailRootNodeDateToConsider)
+	# If the message is fully processed and its newest message is more than _x period_ old
+	#	then we stop.  Why?  We are basically giving the max amount of time before we consider
+	#   we give up looking.  Since we call this pretty blasted often, this would require an
+	#	extended downtime period.  In that case, its on the devops staff to change this period
+	#	if they need to recover from extended downtime.
+	# Else continue.
+	continueProcessing = True
+	if newestMessageEpochTimeUtc < redditAbsoluteOldestModmailRootNodeDateToConsider:
+		continueProcessing = False
+	elif wasMessageAlreadyFullyInSystem and not inExtendedValidationMode:
+		continueProcessing = False
+	elif wasMessageAlreadyFullyInSystem and inExtendedValidationMode and newestMessageEpochTimeUtc < extendedValidationModeOldDatePeriod:
+		continueProcessing = False
+	
+	return continueProcessing
+	
+# UTC vs Local date-time issue here I think.
+# TODO:  Fix if we care.  For now, just push it out one more date.  
+#			(no issue will be more than 12 hours so +24 and 'who cares for now')
+# When called, will update our understanding of our extended period end date.
+def setGlobalVariablesForExtendedValidationMode():
+	global extendedValidationModeOldDatePeriod
+	period = (datetime.now() - timedelta(days=8) - datetime(1970,1,1))
+	extendedValidationModeOldDatePeriod = period.days * 1440 + period.seconds
+	
+	
+def processModMailRootMessage(debug, mail, inExtendedValidationMode):
+	shouldContinueProcessingMail = True
+	alreadyProcessedAllItems = True
+	
+	openSqlConnections()
+	#Helping debug output.
+	firstTime = True
+	debugText = ''
+
+	if firstTime and debug:
+		firstTime = False
+		print('Found at least one item in modmail.')
+	
+	rootAge       = int(round(float(str(mail.created_utc))))
+	rootAuthor    = str(mail.author)
+	rootSubject   = str(mail.subject)
+	rootBody      = str(mail.body)
+	rootMessageId = str(mail.id) # Base 36, contains alphanumeric
+	rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
+	rootReplies   = mail.replies
+	
+	# track the newest age value amongst root and replies.
+	messageNewestAge = rootAge
+		
+	if debug:
+		debugText = 'Checking if core message is handled yet.  Subject:  ' + rootSubject
+		print(debugText)
+		
+	# Has the current parent item been handled yet?  
+	ticketId = getTicketIdForAlreadyProcessedRootMessage(rootMessageId)
+	
+	#If we dont find it, we need to add it in.
+	if ticketId == None:
+		alreadyProcessedAllItems = False #	There is at least one thing that we didnt find.
+		
+		if debug:
+			print('Core message not found in system.  Processing.')
+			
+		ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
+		
+		if debug:
+			debugText = 'Added ticket to ticket system - ticket id:  ' + str(ticketId)
+			print(debugText)
+		
+		if ticketId < 1:
+			raise LookupError('Did not get back appropriate ticket id to store from ticket system')
+		
+		noteTheFactWeProcessedAMessageId(rootMessageId, None, ticketId)
+	else:
+		if debug:
+			print('Core message found in system already.')
+			
+	if debug:
+		print('Checking children that may exist.')
+	
+	# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
+	# Now that we have handled the parent, check for each of the children within this root parent.
+	allRepliesHandled = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge)
+	alreadyProcessedAllItems = alreadyProcessedAllItems and allRepliesHandled
+	
+	shouldContinueProcessingMail = shouldAnyMoreMessagesBeProcessed(alreadyProcessedAllItems, messageNewestAge, inExtendedValidationMode)
+	
+	return shouldContinueProcessingMail
+	
 def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
 	sql = ''
 	
@@ -257,7 +304,7 @@ def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
 		sqlCursor.execute(sql, (parentMessageId,messageId))
 		
 	
-	sqlConn.commit
+	sqlConn.commit()
 
 def getHasReplyBeenProcessed(rootMessageId, replyMessageId):
 	processed = True
@@ -287,7 +334,9 @@ def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 
 # In reply object
 # out - True/False - True iff all children found were ones we already processed
-def handleMessageReplies(debug, ticketId, rootMessageId, replies):
+# NOTE:  messageNewestAge is being passed by reference and we are updating the value
+# 	outside of this function.
+def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestAge):
 	firstTimeWithReply = True
 	foundAllItems = True
 	
@@ -300,6 +349,14 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies):
 		replyAuthor    = str(reply.author)
 		replyBody      = str(reply.body)
 		replyMessageId = str(reply.id) # Base 36, contains alphanumeric
+		replyAge       = int(round(float(str(reply.created_utc))))
+		
+		# messageNewestAge is passed by reference, we are updating data in the core routine.
+		if replyAge > messageNewestAge:
+			if debug:
+				debugText = 'Found a message component with a newer age.  Old lowest-age = ' + str(messageNewestAge) + ', New lowest-age = ' + str(replyAge)
+				print(debugText)
+			messageNewestAge = replyAge
 		
 		if debug:
 			debugText = 'Checking if message reply is handled yet.  Body:  ' + replyBody
