@@ -72,6 +72,21 @@ requestTrackerQueueToPostTo = 1 # Tools -> Configuration -> Queues -> Select, wh
 requestTrackerUsername = '' 
 requestTrackerPassword = '' 
 
+# Request Tracker -> Modmail replies Section.
+# This deals with what you have to do to allow request tracker to push modmail replies back into Reddit.
+# To enable this you need to add a Custom Field of type 'Fill in one text area' that applies to 'Tickets' that is Enabled.
+#	Once done, edit this custom field and change 'Applies To' to apply it to the different queues you wish reddit replies to come from.
+#	Do note that the custom field description is unused in request tracker - the name is what matters.
+#   Do note:  Make absolutely 100% sure that the modmail request tracker bot has access to 'Modify Custom Field Values' in the queues tickets
+#		it will operate in.  Failure to do so breaks the process because once we process a reply we set the custom field to empty-string to note that
+#		there isnt something queued up for posting.  Also needs "Modify Ticket" privilege obviously.
+# Request Tracker Bug:  Make the custom field just simple text.  No colons, etc.  Seriously, theres a bug in request tracker.  It will not work correctly in
+#	all api calls if you choose not to follow this.  Buyer beware.
+requestTrackerAllowModmailRepliesToBeSentToReddit = False # Change to True if you wish to allow replies.
+requestTrackerCustomFieldForRedditReplies = 'New Reddit Modmail Reply' # Must be set to the -exact- custom field Name.
+requestTrackerRedditModmailReply = 'Reply from the ModMail group:\n\n{Content}' # Change to whatever you would like.  {Content} token is replaced with your message.
+
+
 # End Definitions - Do not modify files below this line.
 
 # Request Tracker Specific 
@@ -104,7 +119,7 @@ def init():
 	sqlCursor = None
 	
 	period = (datetime.now() + timedelta(minutes=redditMinutesBetweenExtendedValidationMode) - datetime(1970,1,1))
-	nextExtendedValidationInterval = period.days * 1440 + period.seconds
+	nextExtendedValidationInterval = period.days * 86400 + period.seconds
 	
 	openSqlConnections()
 	sql = 'CREATE TABLE IF NOT EXISTS ' + sqliteDatabaseTablename + '(CommentId TEXT PRIMARY KEY, ParentCommentId TEXT, TicketId INTEGER, CHECK((ParentCommentId is null and TicketId is not null) OR (ParentCommentId is not null and TicketId is null)));'
@@ -146,11 +161,11 @@ def processModMail():
 		
 		# see if its time to process in extended validation mode.
 		period = (datetime.now() - datetime(1970,1,1))
-		if (nextExtendedValidationInterval < (period.days * 1440 + period.seconds)):
+		if (nextExtendedValidationInterval < (period.days * 86400 + period.seconds)):
 			print('Processing in ExtendedValidationMode')
 			setGlobalVariablesForExtendedValidationMode()
 			period = (datetime.now() + timedelta(minutes=redditMinutesBetweenExtendedValidationMode) - datetime(1970,1,1))
-			nextExtendedValidationInterval = period.days * 1440 + period.seconds
+			nextExtendedValidationInterval = period.days * 86400 + period.seconds
 			inExtendedValidationMode = True
 		
 		if debug:
@@ -226,7 +241,7 @@ def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessa
 def setGlobalVariablesForExtendedValidationMode():
 	global extendedValidationModeOldDatePeriod
 	period = (datetime.now() - timedelta(days=8) - datetime(1970,1,1))
-	extendedValidationModeOldDatePeriod = period.days * 1440 + period.seconds
+	extendedValidationModeOldDatePeriod = period.days * 86400 + period.seconds
 	
 	
 def processModMailRootMessage(debug, mail, inExtendedValidationMode):
@@ -249,6 +264,10 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	rootMessageId = str(mail.id) # Base 36, contains alphanumeric
 	rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
 	rootReplies   = mail.replies
+	
+	# Early out - If this is automod or reddit, just quit.
+	if rootAuthor.lower() == 'automoderator' or rootAuthor.lower() == 'reddit' or rootSubject.lower() == 'moderator added' or rootSubject.lower() == 'moderator invited':
+		return True # Get out and ignore this message.
 	
 	# track the newest age value amongst root and replies.
 	messageNewestAge = rootAge
@@ -400,6 +419,7 @@ def createTicket(author, subject, body, modmailMessageUrl):
 	response = resource.post(path='ticket/new', payload=content,)
 
 	# if this wasnt successful, the following statements will error out and send us down to the catch.
+	
 	strTicket = (response.parsed[0][0][1]).split('/')[1]
 	ticketId = int(strTicket)
 	return ticketId
@@ -421,19 +441,169 @@ def addTicketComment(ticketId, author, body):
 	# if this wasnt successful, the type will not be 200 and we will be sent down to the except.
 	if response.status_int != 200:
 		raise LookupError('Was unable to find/update expected ticket.')
+		
+def processRequestTrackerRepliesToModMail():
+	try:
+		openSqlConnections()
+		if debug:
+			print('Processing Request Tracker Replies to ModMail.')
+		
+		queryText = '\'CF.{' + requestTrackerCustomFieldForRedditReplies.replace(" ", "%20") + '}\'>\'\''
+		fullQuery = 'search/ticket?query=' + queryText + '&orderby=-LastUpdated&format=l'
+		response = resource.get(path=fullQuery)
+		
+		responseObj = []
+		for ticket in response.parsed:
+			responseObj.append({})
+			for attribute in ticket:
+				responseObj[len(responseObj)-1][attribute[0]] = attribute[1]
+				
+		if len(responseObj) > 0:
+			r = praw.Reddit(user_agent=prawUserAgent)
+			r.login(redditUsername,redditPassword)
+			
+			# for each items with a reply, handle said ticket reply.
+			for ticket in responseObj:
+				strTicket = ticket['id'].split('/')[1]
+				ticketId = int(strTicket)
+				reply = ticket['CF.{New Reddit Modmail Reply}']
+				processTicketModmailReply(ticketId, reply, r)
+	except SystemExit:
+		sys.exit(1)
+	except:
+		# Errors will happen here, Reddit fails all the time.
+		# Do not vulgarly error out.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to process modmail replies on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		
+		pass
+
+def processTicketModmailReply(ticketId, replyText, prawContext):
+		redditUrl = getRedditPostUrlFromTicketId(ticketId)
+		if redditUrl == None:
+			print('Could not find reddit post url for ticket id ' + str(ticketId) + '.')
+			return
+		
+		postRedditModmailReply(redditUrl, replyText, prawContext)
+		removeModmailReplyFromTicket(ticketId)
+
+# No error handling, let errors fail this call and bubble up.		
+def postRedditModmailReply(redditUrl, replyText, prawContext):
+	if debug:
+		print('Sending modmail reply to redditurl ' + redditUrl + ':  ' + replyText)
+		
+	full_reply_text = requestTrackerRedditModmailReply.replace("{Content}", replyText)
 	
+	message_link = prawContext.get_content(url=redditUrl)
+	for message in message_link:
+		message.reply(full_reply_text)
+		
+def removeModmailReplyFromTicket(ticketId):
+	if debug:
+		print('Removing modmail reply attribute from ticket ' + str(ticketId) + '.')
+	
+	content = {
+		'content': {
+			'CF.{' + requestTrackerCustomFieldForRedditReplies + '}': ''
+		}
+	}
+	try:
+		response = resource.post(path='ticket/' + str(ticketId) + '/edit', payload=content,)
+		if response.status_int != 200:
+			raise LookupError('Was unable to update expected ticket, we should defensively exit here.')
+		
+	except:
+		# Display error and Fail.
+		# Lets not play around with errors where we cant remove from the ticket.
+		# In this case, we could cause a never ending stream of reddit replies and noone wants that.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to update the ticket on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		
+		sys.exit(1)
+
+		
+def getRedditPostUrlFromTicketId(ticketId):
+	returnValue = None
+	
+	sql = 'select CommentId from ' + sqliteDatabaseTablename + ' where ParentCommentId is null and TicketId = ?;'
+	sqlCursor.execute(sql, (ticketId,)) # [sic] you have to pass in a sequence.  
+	
+	sqlrow = sqlCursor.fetchone()
+	if sqlrow != None:
+		if debug:
+			print('Found CommentId for ticketId')
+		returnValue = 'http://www.reddit.com/message/messages/' + str(sqlrow[0])
+		if debug:
+			print('Reddit main modmail reply url is \'' + returnValue + '\'')
+	
+	return returnValue
+	
+
 def mainloop():
 	
 	while True:
 		if debug:
-			print('Waking... Processing modmail.');
+			print('Waking... Processing modmail.')
 			
 		processModMail()
 		
+		if requestTrackerAllowModmailRepliesToBeSentToReddit:
+			processRequestTrackerRepliesToModMail()
+		
 		if debug:
-			print('Modmail processed.  Sleeping...');
+			print('Modmail processed.  Sleeping...')
 			
-		time.sleep(redditSleepIntervalInSecondsBetweenRequests); # sleep x seconds and do it again.
+		time.sleep(redditSleepIntervalInSecondsBetweenRequests) # sleep x seconds and do it again.
 
 init()
 mainloop()
