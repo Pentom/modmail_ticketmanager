@@ -461,12 +461,14 @@ def processRequestTrackerRepliesToModMail():
 		if len(responseObj) > 0:
 			r = praw.Reddit(user_agent=prawUserAgent)
 			r.login(redditUsername,redditPassword)
+		
+			cfAttr = 'CF.{' + requestTrackerCustomFieldForRedditReplies + '}'
 			
 			# for each items with a reply, handle said ticket reply.
 			for ticket in responseObj:
 				strTicket = ticket['id'].split('/')[1]
 				ticketId = int(strTicket)
-				reply = ticket['CF.{New Reddit Modmail Reply}']
+				reply = ticket[cfAttr]
 				processTicketModmailReply(ticketId, reply, r)
 	except SystemExit:
 		sys.exit(1)
