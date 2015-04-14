@@ -143,15 +143,16 @@ def openSqlConnections():
 def closeSqlConnections():
 	global sqlConn
 	global sqlCursor
-	sqlConn.commit()
-	sqlCursor.close()
-	sqlConn.close()
-	sqlCursor = None
-	sqlConn = None
+	
+	if not sqlConn == None:
+		sqlConn.commit()
+		sqlCursor.close()
+		sqlConn.close()
+		sqlCursor = None
+		sqlConn = None
 	
 def processModMail():
 	global nextExtendedValidationInterval
-	openSqlConnections()
 	
 	try:
 		r = praw.Reddit(user_agent=prawUserAgent)
@@ -210,11 +211,9 @@ def processModMail():
 			print "*** format_tb:"
 			print repr(traceback.format_tb(exc_traceback))
 			print "*** tb_lineno:", exc_traceback.tb_lineno
-			
+		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.	
 		pass
-	closeSqlConnections()
-	openSqlConnections()
-	
+
 def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessageEpochTimeUtc, inExtendedValidationMode):
 	# If the newest message is before our drop-dead oldest value, then we stop.  
 	#	(redditAbsoluteOldestModmailRootNodeDateToConsider)
@@ -248,7 +247,6 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	shouldContinueProcessingMail = True
 	alreadyProcessedAllItems = True
 	
-	openSqlConnections()
 	#Helping debug output.
 	firstTime = True
 	debugText = ''
@@ -313,6 +311,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	return shouldContinueProcessingMail
 	
 def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
+	openSqlConnections()
 	sql = ''
 	
 	if parentMessageId == None:
@@ -324,9 +323,12 @@ def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
 		
 	
 	sqlConn.commit()
+	closeSqlConnections()
 
 def getHasReplyBeenProcessed(rootMessageId, replyMessageId):
 	processed = True
+	
+	openSqlConnections()
 	
 	# Has the current child item been handled yet?  
 	sql = 'select 1 from ' + sqliteDatabaseTablename + ' where ParentCommentId = ? and CommentId = ?;'
@@ -336,11 +338,15 @@ def getHasReplyBeenProcessed(rootMessageId, replyMessageId):
 	sqlrow = sqlCursor.fetchone()
 	if sqlrow == None:
 		processed = False
+
+	closeSqlConnections()
 	
 	return processed
 	
 def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 	ticketId = None
+	
+	openSqlConnections()
 	
 	sql = 'select TicketId from ' + sqliteDatabaseTablename + ' where ParentCommentId is null and CommentId = ?;'
 	sqlCursor.execute(sql, (rootMessageId,)) # [sic] you have to pass in a sequence.  
@@ -348,6 +354,8 @@ def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 	sqlrow = sqlCursor.fetchone()
 	if sqlrow != None:
 		ticketId = sqlrow[0]
+	
+	closeSqlConnections()
 	
 	return ticketId
 
@@ -444,7 +452,7 @@ def addTicketComment(ticketId, author, body):
 		
 def processRequestTrackerRepliesToModMail():
 	try:
-		openSqlConnections()
+		
 		if debug:
 			print('Processing Request Tracker Replies to ModMail.')
 		
@@ -471,6 +479,7 @@ def processRequestTrackerRepliesToModMail():
 				reply = ticket[cfAttr]
 				processTicketModmailReply(ticketId, reply, r)
 	except SystemExit:
+		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		sys.exit(1)
 	except:
 		# Errors will happen here, Reddit fails all the time.
@@ -503,6 +512,7 @@ def processRequestTrackerRepliesToModMail():
 			print repr(traceback.format_tb(exc_traceback))
 			print "*** tb_lineno:", exc_traceback.tb_lineno
 		
+		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		pass
 
 def processTicketModmailReply(ticketId, replyText, prawContext):
@@ -571,11 +581,14 @@ def removeModmailReplyFromTicket(ticketId):
 			print repr(traceback.format_tb(exc_traceback))
 			print "*** tb_lineno:", exc_traceback.tb_lineno
 		
+		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		sys.exit(1)
 
 		
 def getRedditPostUrlFromTicketId(ticketId):
 	returnValue = None
+	
+	openSqlConnections()
 	
 	sql = 'select CommentId from ' + sqliteDatabaseTablename + ' where ParentCommentId is null and TicketId = ?;'
 	sqlCursor.execute(sql, (ticketId,)) # [sic] you have to pass in a sequence.  
@@ -587,6 +600,8 @@ def getRedditPostUrlFromTicketId(ticketId):
 		returnValue = 'http://www.reddit.com/message/messages/' + str(sqlrow[0])
 		if debug:
 			print('Reddit main modmail reply url is \'' + returnValue + '\'')
+	
+	closeSqlConnections()
 	
 	return returnValue
 	
