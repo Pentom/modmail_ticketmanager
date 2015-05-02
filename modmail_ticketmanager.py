@@ -89,6 +89,7 @@ requestTrackerRedditModmailReply = 'Reply from the ModMail group:\n\n{Content}' 
 
 # End Definitions - Do not modify files below this line.
 
+
 # Request Tracker Specific 
 # https://github.com/z4r/python-rtkit#comment-on-a-ticket-with-attachments
 from rtkit.resource import RTResource
@@ -226,10 +227,16 @@ def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessa
 	continueProcessing = True
 	if newestMessageEpochTimeUtc < redditAbsoluteOldestModmailRootNodeDateToConsider:
 		continueProcessing = False
+		if debug:
+			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is older than the oldest message root node to consider."
 	elif wasMessageAlreadyFullyInSystem and not inExtendedValidationMode:
 		continueProcessing = False
+		if debug:
+			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and not in extended validation mode."
 	elif wasMessageAlreadyFullyInSystem and inExtendedValidationMode and newestMessageEpochTimeUtc < extendedValidationModeOldDatePeriod:
 		continueProcessing = False
+		if debug:
+			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and even though in inExtendedValidationMode the newest reply is older than our extended validation age (redditMaximumAmountOfDaysToAllowLookbackForMissingReplies)."
 	
 	return continueProcessing
 	
@@ -239,7 +246,7 @@ def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessa
 # When called, will update our understanding of our extended period end date.
 def setGlobalVariablesForExtendedValidationMode():
 	global extendedValidationModeOldDatePeriod
-	period = (datetime.now() - timedelta(days=8) - datetime(1970,1,1))
+	period = (datetime.now() - timedelta(days=redditMaximumAmountOfDaysToAllowLookbackForMissingReplies) - datetime(1970,1,1))
 	extendedValidationModeOldDatePeriod = period.days * 86400 + period.seconds
 	
 	
@@ -303,7 +310,10 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	
 	# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
 	# Now that we have handled the parent, check for each of the children within this root parent.
-	allRepliesHandled = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge)
+	messageReplyReturn = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge)
+	allRepliesHandled = messageReplyReturn['foundAllItems']
+	messageNewestAge = messageReplyReturn['messageNewestAge']
+	
 	alreadyProcessedAllItems = alreadyProcessedAllItems and allRepliesHandled
 	
 	shouldContinueProcessingMail = shouldAnyMoreMessagesBeProcessed(alreadyProcessedAllItems, messageNewestAge, inExtendedValidationMode)
@@ -360,12 +370,10 @@ def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 	return ticketId
 
 # In reply object
-# out - True/False - True iff all children found were ones we already processed
-# NOTE:  messageNewestAge is being passed by reference and we are updating the value
-# 	outside of this function.
+# out - Object with two properties that denote if we already processed all items and the newest message age.
 def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestAge):
 	firstTimeWithReply = True
-	foundAllItems = True
+	messageReplyReturn = {'foundAllItems':True, 'messageNewestAge':messageNewestAge}
 	
 	for reply in replies:
 					
@@ -378,12 +386,11 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 		replyMessageId = str(reply.id) # Base 36, contains alphanumeric
 		replyAge       = int(round(float(str(reply.created_utc))))
 		
-		# messageNewestAge is passed by reference, we are updating data in the core routine.
-		if replyAge > messageNewestAge:
+		if replyAge > messageReplyReturn['messageNewestAge']:
 			if debug:
-				debugText = 'Found a message component with a newer age.  Old lowest-age = ' + str(messageNewestAge) + ', New lowest-age = ' + str(replyAge)
+				debugText = 'Found a message component with a newer age.  Old lowest-age = ' + str(messageReplyReturn['messageNewestAge']) + ', New lowest-age = ' + str(replyAge)
 				print(debugText)
-			messageNewestAge = replyAge
+			messageReplyReturn['messageNewestAge'] = replyAge
 		
 		if debug:
 			debugText = 'Checking if message reply is handled yet.  Body:  ' + replyBody
@@ -393,7 +400,7 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 		alreadyProcessed = getHasReplyBeenProcessed(rootMessageId, replyMessageId)
 		
 		if not alreadyProcessed:
-			foundAllItems = False #	There is at least one thing that we didnt find.
+			messageReplyReturn['foundAllItems'] = False #	There is at least one thing that we didnt find.
 			
 			if debug:
 				print('Reply message not found in system.  Processing.')
@@ -409,7 +416,7 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 			if debug:
 				print('Reply message already found in system.')
 	
-	return foundAllItems
+	return messageReplyReturn
 	
 # no error handling, let errors bubble up.
 # in - message information
