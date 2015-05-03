@@ -71,6 +71,11 @@ requestTrackerQueueToPostTo = 1 # Tools -> Configuration -> Queues -> Select, wh
 # Request Tracker - User to use to post.
 requestTrackerUsername = '' 
 requestTrackerPassword = '' 
+						   
+# Section on auto-transition of tickets
+requestTrackerShouldWeTransitionTicketsOnReply = True
+requestTrackerTicketStatesThatWeShouldTransition = ['resolved','others_go_here'] # Lower case here please!  I am not doing case comparisons.
+requestTrackerTicketStateWeShouldTransitionTo = 'open'
 
 # Request Tracker -> Modmail replies Section.
 # This deals with what you have to do to allow request tracker to push modmail replies back into Reddit.
@@ -253,6 +258,7 @@ def setGlobalVariablesForExtendedValidationMode():
 def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	shouldContinueProcessingMail = True
 	alreadyProcessedAllItems = True
+	weCreatedModmailRootMessage = False
 	
 	#Helping debug output.
 	firstTime = True
@@ -287,6 +293,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	#If we dont find it, we need to add it in.
 	if ticketId == None:
 		alreadyProcessedAllItems = False #	There is at least one thing that we didnt find.
+		weCreatedModmailRootMessage = True
 		
 		if debug:
 			print('Core message not found in system.  Processing.')
@@ -313,12 +320,151 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	messageReplyReturn = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge)
 	allRepliesHandled = messageReplyReturn['foundAllItems']
 	messageNewestAge = messageReplyReturn['messageNewestAge']
-	
+		
 	alreadyProcessedAllItems = alreadyProcessedAllItems and allRepliesHandled
+	
+	# If we have any replies and we didnt just create this modmail root message,
+	# then we need to assume the ticket could be closed.  Do we need to open it?
+	if not weCreatedModmailRootMessage and messageReplyReturn['foundReplyBySomeoneOtherThanTicketManager'] and requestTrackerShouldWeTransitionTicketsOnReply:
+		transitionTicketToExpectedState(ticketId)
 	
 	shouldContinueProcessingMail = shouldAnyMoreMessagesBeProcessed(alreadyProcessedAllItems, messageNewestAge, inExtendedValidationMode)
 	
 	return shouldContinueProcessingMail
+
+def getTicketData(ticketId):
+	try:
+		getTicketStatusUrl = 'ticket/' + str(ticketId)
+		response = resource.get(path=getTicketStatusUrl)
+		
+		responseObj = []
+		for ticket in response.parsed:
+			responseObj.append({})
+			for attribute in ticket:
+				responseObj[len(responseObj)-1][attribute[0]] = attribute[1]
+		
+		return responseObj
+	
+	except RTResourceError as e:
+		errorMsg = 'Failed to get ticket information for ticket id ' + str(ticketId) + '.'
+		print(errorMsg)
+		return []
+	except:
+		# Do not vulgarly error out.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to getTicketData on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		return []
+
+def setTicketStateTo(ticketId, newState):
+	try:
+		content = {
+			'content': {
+				'Status': newState,
+			}
+		}
+		responseUrl = 'ticket/' + str(ticketId) + '/edit'
+		response = resource.post(path=responseUrl, payload=content,)
+	except:
+		# Do not vulgarly error out.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to setTicketStateTo (transitioning the ticket) on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		
+		pass
+	
+def transitionTicketToExpectedState(ticketId):
+	try:
+		ticketData = getTicketData(ticketId)
+		if len(ticketData) > 0:
+			currentTicketStatus = ticketData[0]['Status']
+			
+			#Is this status one that we are transitioning?
+			if currentTicketStatus.lower() in requestTrackerTicketStatesThatWeShouldTransition:
+				#Transition it!
+				setTicketStateTo(ticketId, requestTrackerTicketStateWeShouldTransitionTo)
+		
+	except:
+		# Do not vulgarly error out.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to transitionTicketToExpectedState on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		
+		pass
+	
+		
 	
 def noteTheFactWeProcessedAMessageId(messageId, parentMessageId, ticketId):
 	openSqlConnections()
@@ -373,7 +519,7 @@ def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 # out - Object with two properties that denote if we already processed all items and the newest message age.
 def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestAge):
 	firstTimeWithReply = True
-	messageReplyReturn = {'foundAllItems':True, 'messageNewestAge':messageNewestAge}
+	messageReplyReturn = {'foundAllItems':True, 'messageNewestAge':messageNewestAge, 'foundReplyBySomeoneOtherThanTicketManager':False}
 	
 	for reply in replies:
 					
@@ -401,6 +547,9 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 		
 		if not alreadyProcessed:
 			messageReplyReturn['foundAllItems'] = False #	There is at least one thing that we didnt find.
+			
+			if replyAuthor.lower() != redditUsername.lower():
+				messageReplyReturn['foundReplyBySomeoneOtherThanTicketManager'] = True
 			
 			if debug:
 				print('Reply message not found in system.  Processing.')
