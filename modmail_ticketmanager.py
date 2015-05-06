@@ -113,6 +113,7 @@ import sys, traceback
 from datetime import datetime
 from datetime import timedelta  
 from pprint import pprint
+import unicodedata # normalize unicode strings.
 
 prawUserAgent = 'ModMailTicketCreator v0.01 by /u/Pentom'
 
@@ -269,9 +270,9 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 		print('Found at least one item in modmail.')
 	
 	rootAge       = int(round(float(str(mail.created_utc))))
-	rootAuthor    = str(mail.author)
-	rootSubject   = str(mail.subject)
-	rootBody      = str(mail.body)
+	rootAuthor    = str(unicodedata.normalize('NFKD', mail.author).encode('ascii','ignore')) if type(mail.author) is unicode else str(mail.author)
+	rootSubject   = str(unicodedata.normalize('NFKD', mail.subject).encode('ascii','ignore')) if type(mail.subject) is unicode else str(mail.subject)
+	rootBody      = str(unicodedata.normalize('NFKD', mail.body).encode('ascii','ignore')) if type(mail.body) is unicode else str(mail.body)
 	rootMessageId = str(mail.id) # Base 36, contains alphanumeric
 	rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
 	rootReplies   = mail.replies
@@ -527,8 +528,8 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 			firstTimeWithReply = False
 			print('Found at least one reply to core message.')
 
-		replyAuthor    = str(reply.author)
-		replyBody      = str(reply.body)
+		replyAuthor    = str(unicodedata.normalize('NFKD', reply.author).encode('ascii','ignore')) if type(reply.author) is unicode else str(reply.author)
+		replyBody      = str(unicodedata.normalize('NFKD', reply.body).encode('ascii','ignore')) if type(reply.body) is unicode else str(reply.body)
 		replyMessageId = str(reply.id) # Base 36, contains alphanumeric
 		replyAge       = int(round(float(str(reply.created_utc))))
 		
