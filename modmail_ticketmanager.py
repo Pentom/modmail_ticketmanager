@@ -39,7 +39,7 @@ debug = False #If set to True then will output a very large amount of data allow
 # Reddit
 redditUsername = ''
 redditPassword = ''
-redditSleepIntervalInSecondsBetweenRequests = 5
+redditSleepIntervalInSecondsBetweenRequests = 60
 # The MinutesBetweenExtendedValidationMode and MaximumAmountOfDaysToAllowLookbackForMissingReplies are pretty tightly coupled concepts.
 # Since we process things from newest to oldest, we are using a shortcut that lets us know when to quit (when we hit the first message 
 #	that is already 100% processed we can end for now).  This is great for speeding up processing but horrible when you realize that
@@ -91,6 +91,15 @@ requestTrackerAllowModmailRepliesToBeSentToReddit = False # Change to True if yo
 requestTrackerCustomFieldForRedditReplies = 'New Reddit Modmail Reply' # Must be set to the -exact- custom field Name.
 requestTrackerRedditModmailReply = 'Reply from the ModMail group:\n\n{Content}' # Change to whatever you would like.  {Content} token is replaced with your message.
 
+# Tokenized data used for choosing what is shown in the ticketing system for the initial ticket creation comment and replies.
+# Allowed tokens for the following area (case matters!)
+# {Author} = person in reddit who posted this.
+# {ModmailMessageUrl} = URL for modmail message if you need to jump to it.
+# {Content} = data that the user actually posted into modmail.
+# {Subject} - only valid for initial creation comment/subject, as only the root message in a thread has that.
+requestTrackerInitialTicketCreationSubject = 'Modmail - {Author} - {Subject}'
+requestTrackerInitialTicketCreationComment = 'Post from {Author}\nResponse URL: {ModmailMessageUrl}\nContents:\n{Content}'
+requestTrackerThreadReply = 'Post from {Author}\nContents:\n{Content}'
 
 # End Definitions - Do not modify files below this line.
 
@@ -318,7 +327,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	
 	# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
 	# Now that we have handled the parent, check for each of the children within this root parent.
-	messageReplyReturn = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge)
+	messageReplyReturn = handleMessageReplies(debug, ticketId, rootMessageId, rootReplies, messageNewestAge, rootResponseUrl)
 	allRepliesHandled = messageReplyReturn['foundAllItems']
 	messageNewestAge = messageReplyReturn['messageNewestAge']
 		
@@ -518,7 +527,7 @@ def getTicketIdForAlreadyProcessedRootMessage(rootMessageId):
 
 # In reply object
 # out - Object with two properties that denote if we already processed all items and the newest message age.
-def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestAge):
+def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestAge, rootResponseUrl):
 	firstTimeWithReply = True
 	messageReplyReturn = {'foundAllItems':True, 'messageNewestAge':messageNewestAge, 'foundReplyBySomeoneOtherThanTicketManager':False}
 	
@@ -559,7 +568,7 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 				debugText = 'Updating ticket found in our system:  ' + str(ticketId)
 				print(debugText)
 			
-			addTicketComment(ticketId, replyAuthor, replyBody)
+			addTicketComment(ticketId, replyAuthor, replyBody, rootResponseUrl)
 			
 			noteTheFactWeProcessedAMessageId(replyMessageId, rootMessageId, None)
 		else:
@@ -572,8 +581,8 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 # in - message information
 # out integer ticket id.
 def createTicket(author, subject, body, modmailMessageUrl):
-	postedSubject = 'Modmail - ' + author + ' - ' + subject
-	postedBody = 'Post from ' + author + '\nResponse URL: ' + modmailMessageUrl + '\nContents:\n' + body
+	postedSubject = requestTrackerInitialTicketCreationSubject.replace("{Author}", author).replace("{Subject}", subject).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", body)
+	postedBody = requestTrackerInitialTicketCreationComment.replace("{Author}", author).replace("{Subject}", subject).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", body)
 	content = {
 		'content': {
 			'Queue': requestTrackerQueueToPostTo,
@@ -592,8 +601,8 @@ def createTicket(author, subject, body, modmailMessageUrl):
 # no error handling, let errors bubble up.
 # in - message information
 # out None
-def addTicketComment(ticketId, author, body):
-	postedBody = 'Post from ' + author + '\nContents:\n' + body
+def addTicketComment(ticketId, author, body, modmailMessageUrl):
+	postedBody = requestTrackerThreadReply.replace("{Author}", author).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", body)
 	params = {
 		'content': {
 			'Action': 'comment',
@@ -678,8 +687,81 @@ def processTicketModmailReply(ticketId, replyText, prawContext):
 			print('Could not find reddit post url for ticket id ' + str(ticketId) + '.')
 			return
 		
-		postRedditModmailReply(redditUrl, replyText, prawContext)
+		# Edge case - we didnt note that we replied into reddit but we actually did.
+		# Probable cause request tracker or network glitch or reddit marking a 'failed' action for something that succeeded.
+		# Lets check to see if we have handled this.
+		alreadyHandledModmailReply = checkIfAlreadyHandledModmailReply(ticketId, redditUrl, replyText)
+		if not alreadyHandledModmailReply:
+			postRedditModmailReply(redditUrl, replyText, prawContext)
+			
 		removeModmailReplyFromTicket(ticketId)
+
+# Due to the way modmail/request tracker work together, and reddits rampant failures,
+# its possible that we make a post to reddit that is accepted by reddit but the request
+# times out before it can acknowledge - so we don't note that it was accepted.  We should try
+# to work around this by checking if the modmail reply was accepted into the ticket system
+# manually before posting again.  This won't guarantee non-duplication but will significantly
+# help such.
+# Note - this is a 'nice to have' so if we have an issue with this call, we can assume that it hasnt got 
+#	a reply - just to keep this train moving.
+def checkIfAlreadyHandledModmailReply(ticketId, modmailMessageUrl, replyText):
+	isAlreadyHandled = False
+	
+	try:
+		response = resource.get(path='ticket/' + str(ticketId) + '/history?format=l')
+
+		responseObj = []
+		for ticket in response.parsed:
+			responseObj.append({})
+			for attribute in ticket:
+				responseObj[len(responseObj)-1][attribute[0]] = attribute[1]
+		
+		fullReplyText = requestTrackerThreadReply.replace("{Author}", redditUsername).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", requestTrackerRedditModmailReply).replace("{Content}", replyText)
+		
+		idForSettingModmailResponse = -1
+		
+		for change in responseObj:
+			if change['Type'] == 'CustomField' and change['OldValue'] == '' and requestTrackerCustomFieldForRedditReplies in change['Description'] and replyText == change['NewValue']:
+				idForSettingModmailResponse = int(change['id'])
+		
+		# Did we find the area where we set a modmail response?  Not guaranteed if someones been monkeying with the tokens.
+		if idForSettingModmailResponse > -1:
+			# We found it, so lets go ahead and check to see if this has been handled so far!
+			for change in responseObj:
+				if int(change['id']) > idForSettingModmailResponse and change['Type'] == 'Comment' and change['Content'].lower() == fullReplyText.lower():
+					isAlreadyHandled = True
+	except:
+		# Do not vulgarly error out.
+		e = str(sys.exc_info()[0])
+		l = str(sys.exc_traceback.tb_lineno)
+		error = str(datetime.utcnow()) + ' - Error when attempting to checkIfAlreadyHandledModmailReply on line number ' + l + '.  Exception:  ' + e
+		print(error)
+		
+		# Go overboard on logging if we are in debug mode.  
+		if debug:
+			exc_type, exc_value, exc_traceback = sys.exc_info()
+			print "*** print_tb:"
+			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
+			print "*** print_exception:"
+			traceback.print_exception(exc_type, exc_value, exc_traceback,
+									  limit=2, file=sys.stdout)
+			print "*** print_exc:"
+			traceback.print_exc()
+			print "*** format_exc, first and last line:"
+			formatted_lines = traceback.format_exc().splitlines()
+			print formatted_lines[0]
+			print formatted_lines[-1]
+			print "*** format_exception:"
+			print repr(traceback.format_exception(exc_type, exc_value,
+												  exc_traceback))
+			print "*** extract_tb:"
+			print repr(traceback.extract_tb(exc_traceback))
+			print "*** format_tb:"
+			print repr(traceback.format_tb(exc_traceback))
+			print "*** tb_lineno:", exc_traceback.tb_lineno
+		return False
+		
+	return isAlreadyHandled
 
 # No error handling, let errors fail this call and bubble up.		
 def postRedditModmailReply(redditUrl, replyText, prawContext):
