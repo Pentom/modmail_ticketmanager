@@ -115,22 +115,51 @@ from rtkit.errors import RTResourceError
 resource = RTResource(requestTrackerRestApiUrl, requestTrackerUsername, requestTrackerPassword, CookieAuthenticator)
 
 # other
+import argparse
+import logging
 import praw
 import time
 import sqlite3
 import sys, traceback
 from datetime import datetime
 from datetime import timedelta  
-from pprint import pprint
 import unicodedata # normalize unicode strings.
 
 prawUserAgent = 'ModMailTicketCreator v0.01 by /u/Pentom'
+
+# Command line argument parsing
+arg_parser = argparse.ArgumentParser(description='Modmail / RequestTracker ticket daemon')
+arg_parser.add_argument('-l', '--logfile', help='The log file to store output in addition to stdout')
+
+
+def setupLogger(log_level=logging.INFO, log_file=None):
+	global log
+	logfmt = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%dT%H:%M:%S')
+	stdout_handler = logging.StreamHandler(stream=sys.stdout)
+	stdout_handler.setLevel(log_level)
+	stdout_handler.setFormatter(logfmt)
+	file_handler = None
+	if log_file:
+		try:
+			file_h = open(log_file, 'a')
+			file_handler = logging.StreamHandler(stream=file_h)
+			file_handler.setLevel(log_level)
+			file_handler.setFormatter(logfmt)
+		except Exception as ex:
+			print('UNABLE TO OPEN LOG {}: {}'.format(log_file, str(ex)))
+			file_handler = None
+	log = logging.getLogger('script')
+	log.addHandler(stdout_handler)
+	if file_handler:
+		log.addHandler(file_handler)
+	log.setLevel(log_level)
+
 
 def init():
 	global sqlConn
 	global sqlCursor
 	global nextExtendedValidationInterval
-	
+
 	sqlConn = None
 	sqlCursor = None
 	
@@ -179,15 +208,13 @@ def processModMail():
 		# see if its time to process in extended validation mode.
 		period = (datetime.now() - datetime(1970,1,1))
 		if (nextExtendedValidationInterval < (period.days * 86400 + period.seconds)):
-			print('Processing in ExtendedValidationMode')
+			log.info('Processing in ExtendedValidationMode')
 			setGlobalVariablesForExtendedValidationMode()
 			period = (datetime.now() + timedelta(minutes=redditMinutesBetweenExtendedValidationMode) - datetime(1970,1,1))
 			nextExtendedValidationInterval = period.days * 86400 + period.seconds
 			inExtendedValidationMode = True
 		
-		if debug:
-			print('Logged into Reddit.')
-
+		log.debug('Logged into Reddit.')
 		sub = r.get_subreddit(redditSubredditToMonitor)
 		for mail in sub.get_mod_mail(limit=redditMaximumNumberOfRootThreadsToLookBack):
 			
@@ -203,30 +230,31 @@ def processModMail():
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		error = str(datetime.utcnow()) + ' - Error when attempting to review modmail on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error(error)
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.	
 		pass
 
@@ -242,16 +270,13 @@ def shouldAnyMoreMessagesBeProcessed(wasMessageAlreadyFullyInSystem, newestMessa
 	continueProcessing = True
 	if newestMessageEpochTimeUtc < redditAbsoluteOldestModmailRootNodeDateToConsider:
 		continueProcessing = False
-		if debug:
-			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is older than the oldest message root node to consider."
+		log.debug("shouldAnyMoreMessagesBeProcessed:  Negative!  Message is older than the oldest message root node to consider.")
 	elif wasMessageAlreadyFullyInSystem and not inExtendedValidationMode:
 		continueProcessing = False
-		if debug:
-			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and not in extended validation mode."
+		log.debug("shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and not in extended validation mode.")
 	elif wasMessageAlreadyFullyInSystem and inExtendedValidationMode and newestMessageEpochTimeUtc < extendedValidationModeOldDatePeriod:
 		continueProcessing = False
-		if debug:
-			print "shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and even though in inExtendedValidationMode the newest reply is older than our extended validation age (redditMaximumAmountOfDaysToAllowLookbackForMissingReplies)."
+		log.debug("shouldAnyMoreMessagesBeProcessed:  Negative!  Message is already fully in our system and even though in inExtendedValidationMode the newest reply is older than our extended validation age (redditMaximumAmountOfDaysToAllowLookbackForMissingReplies).")
 	
 	return continueProcessing
 	
@@ -276,7 +301,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 
 	if firstTime and debug:
 		firstTime = False
-		print('Found at least one item in modmail.')
+		log.debug('Found at least one item in modmail.')
 	
 	rootAge       = int(round(float(str(mail.created_utc))))
 	rootAuthor    = str(unicodedata.normalize('NFKD', mail.author).encode('ascii','ignore')) if type(mail.author) is unicode else str(mail.author)
@@ -293,9 +318,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	# track the newest age value amongst root and replies.
 	messageNewestAge = rootAge
 		
-	if debug:
-		debugText = 'Checking if core message is handled yet.  Subject:  ' + rootSubject
-		print(debugText)
+	log.debug('Checking if core message is handled yet.  Subject:  ' + rootSubject)
 		
 	# Has the current parent item been handled yet?  
 	ticketId = getTicketIdForAlreadyProcessedRootMessage(rootMessageId)
@@ -305,25 +328,20 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 		alreadyProcessedAllItems = False #	There is at least one thing that we didnt find.
 		weCreatedModmailRootMessage = True
 		
-		if debug:
-			print('Core message not found in system.  Processing.')
+		log.debug('Core message not found in system.  Processing.')
 			
 		ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
 		
-		if debug:
-			debugText = 'Added ticket to ticket system - ticket id:  ' + str(ticketId)
-			print(debugText)
+		log.debug('Added ticket to ticket system - ticket id:  {}'.format(ticketId))
 		
 		if ticketId < 1:
 			raise LookupError('Did not get back appropriate ticket id to store from ticket system')
 		
 		noteTheFactWeProcessedAMessageId(rootMessageId, None, ticketId)
 	else:
-		if debug:
-			print('Core message found in system already.')
+		log.debug('Core message found in system already.')
 			
-	if debug:
-		print('Checking children that may exist.')
+	log.debug('Checking children that may exist.')
 	
 	# At this point, variable ticketId is the appropriate integer ticket number where the parent is already at.
 	# Now that we have handled the parent, check for each of the children within this root parent.
@@ -356,38 +374,37 @@ def getTicketData(ticketId):
 		return responseObj
 	
 	except RTResourceError as e:
-		errorMsg = 'Failed to get ticket information for ticket id ' + str(ticketId) + '.'
-		print(errorMsg)
+		log.error('Failed to get ticket information for ticket id {}.'.format(ticketId))
 		return []
 	except:
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to getTicketData on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to getTicketData on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		return []
 
 def setTicketStateTo(ticketId, newState):
@@ -403,32 +420,31 @@ def setTicketStateTo(ticketId, newState):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to setTicketStateTo (transitioning the ticket) on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to setTicketStateTo (transitioning the ticket) on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
-		
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		pass
 	
 def transitionTicketToExpectedState(ticketId):
@@ -446,32 +462,33 @@ def transitionTicketToExpectedState(ticketId):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to transitionTicketToExpectedState on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to transitionTicketToExpectedState on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
-		
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno
+				))
+			log.debug('\n'.join(msg))
+
 		pass
 	
 		
@@ -535,7 +552,7 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 					
 		if debug and firstTimeWithReply:
 			firstTimeWithReply = False
-			print('Found at least one reply to core message.')
+			log.debug('Found at least one reply to core message.')
 
 		replyAuthor    = str(unicodedata.normalize('NFKD', reply.author).encode('ascii','ignore')) if type(reply.author) is unicode else str(reply.author)
 		replyBody      = str(unicodedata.normalize('NFKD', reply.body).encode('ascii','ignore')) if type(reply.body) is unicode else str(reply.body)
@@ -545,12 +562,10 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 		if replyAge > messageReplyReturn['messageNewestAge']:
 			if debug:
 				debugText = 'Found a message component with a newer age.  Old lowest-age = ' + str(messageReplyReturn['messageNewestAge']) + ', New lowest-age = ' + str(replyAge)
-				print(debugText)
+				log.debug(debugText)
 			messageReplyReturn['messageNewestAge'] = replyAge
 		
-		if debug:
-			debugText = 'Checking if message reply is handled yet.  Body:  ' + replyBody
-			print(debugText)
+		log.debug('Checking if message reply is handled yet.  Body:  ' + replyBody)
 		
 		# Has the current child item been handled yet?  
 		alreadyProcessed = getHasReplyBeenProcessed(rootMessageId, replyMessageId)
@@ -561,19 +576,14 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 			if replyAuthor.lower() != redditUsername.lower():
 				messageReplyReturn['foundReplyBySomeoneOtherThanTicketManager'] = True
 			
-			if debug:
-				print('Reply message not found in system.  Processing.')
-		
-			if debug:
-				debugText = 'Updating ticket found in our system:  ' + str(ticketId)
-				print(debugText)
+			log.debug('Reply message not found in system.  Processing.')
+			log.debug('Updating ticket found in our system:  {}'.format(ticketId))
 			
 			addTicketComment(ticketId, replyAuthor, replyBody, rootResponseUrl)
 			
 			noteTheFactWeProcessedAMessageId(replyMessageId, rootMessageId, None)
 		else:
-			if debug:
-				print('Reply message already found in system.')
+			log.debug('Reply message already found in system.')
 	
 	return messageReplyReturn
 	
@@ -619,8 +629,7 @@ def addTicketComment(ticketId, author, body, modmailMessageUrl):
 def processRequestTrackerRepliesToModMail():
 	try:
 		
-		if debug:
-			print('Processing Request Tracker Replies to ModMail.')
+		log.debug('Processing Request Tracker Replies to ModMail.')
 		
 		queryText = '\'CF.{' + requestTrackerCustomFieldForRedditReplies.replace(" ", "%20") + '}\'>\'\''
 		fullQuery = 'search/ticket?query=' + queryText + '&orderby=-LastUpdated&format=l'
@@ -652,31 +661,31 @@ def processRequestTrackerRepliesToModMail():
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to process modmail replies on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to process modmail replies on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		pass
@@ -684,7 +693,7 @@ def processRequestTrackerRepliesToModMail():
 def processTicketModmailReply(ticketId, replyText, prawContext):
 		redditUrl = getRedditPostUrlFromTicketId(ticketId)
 		if redditUrl == None:
-			print('Could not find reddit post url for ticket id ' + str(ticketId) + '.')
+			log.warning('Could not find reddit post url for ticket id ' + str(ticketId) + '.')
 			return
 		
 		# Edge case - we didnt note that we replied into reddit but we actually did.
@@ -734,39 +743,38 @@ def checkIfAlreadyHandledModmailReply(ticketId, modmailMessageUrl, replyText):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to checkIfAlreadyHandledModmailReply on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to checkIfAlreadyHandledModmailReply on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		return False
 		
 	return isAlreadyHandled
 
 # No error handling, let errors fail this call and bubble up.		
 def postRedditModmailReply(redditUrl, replyText, prawContext):
-	if debug:
-		print('Sending modmail reply to redditurl ' + redditUrl + ':  ' + replyText)
+	log.debug('Sending modmail reply to redditurl ' + redditUrl + ':  ' + replyText)
 		
 	full_reply_text = requestTrackerRedditModmailReply.replace("{Content}", replyText)
 	
@@ -775,8 +783,7 @@ def postRedditModmailReply(redditUrl, replyText, prawContext):
 		message.reply(full_reply_text)
 		
 def removeModmailReplyFromTicket(ticketId):
-	if debug:
-		print('Removing modmail reply attribute from ticket ' + str(ticketId) + '.')
+	log.debug('Removing modmail reply attribute from ticket ' + str(ticketId) + '.')
 	
 	content = {
 		'content': {
@@ -794,31 +801,31 @@ def removeModmailReplyFromTicket(ticketId):
 		# In this case, we could cause a never ending stream of reddit replies and noone wants that.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		error = str(datetime.utcnow()) + ' - Error when attempting to update the ticket on line number ' + l + '.  Exception:  ' + e
-		print(error)
+		log.error('Error when attempting to update the ticket on line number {}.  Exception:  {}'.format(l, e))
 		
 		# Go overboard on logging if we are in debug mode.  
 		if debug:
 			exc_type, exc_value, exc_traceback = sys.exc_info()
-			print "*** print_tb:"
-			traceback.print_tb(exc_traceback, limit=1, file=sys.stdout)
-			print "*** print_exception:"
-			traceback.print_exception(exc_type, exc_value, exc_traceback,
-									  limit=2, file=sys.stdout)
-			print "*** print_exc:"
-			traceback.print_exc()
-			print "*** format_exc, first and last line:"
+			msg = [
+				"*** print_tb:",
+				traceback.format_tb(exc_traceback, limit=1, file=sys.stdout),
+				"*** print_exception:",
+				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2, file=sys.stdout),
+				"*** print_exc:",
+				traceback.format_exc(),
+				"*** format_exc, first and last line:"]
 			formatted_lines = traceback.format_exc().splitlines()
-			print formatted_lines[0]
-			print formatted_lines[-1]
-			print "*** format_exception:"
-			print repr(traceback.format_exception(exc_type, exc_value,
-												  exc_traceback))
-			print "*** extract_tb:"
-			print repr(traceback.extract_tb(exc_traceback))
-			print "*** format_tb:"
-			print repr(traceback.format_tb(exc_traceback))
-			print "*** tb_lineno:", exc_traceback.tb_lineno
+			msg.extend((
+				formatted_lines[0],
+				formatted_lines[-1],
+				"*** format_exception:",
+				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
+				"*** extract_tb:",
+				repr(traceback.extract_tb(exc_traceback)),
+				"*** format_tb:",
+				repr(traceback.format_tb(exc_traceback)),
+				"*** tb_lineno:", exc_traceback.tb_lineno))
+			log.debug('\n'.join(msg))
 		
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		sys.exit(1)
@@ -834,11 +841,9 @@ def getRedditPostUrlFromTicketId(ticketId):
 	
 	sqlrow = sqlCursor.fetchone()
 	if sqlrow != None:
-		if debug:
-			print('Found CommentId for ticketId')
+		log.debug('Found CommentId for ticketId')
 		returnValue = 'http://www.reddit.com/message/messages/' + str(sqlrow[0])
-		if debug:
-			print('Reddit main modmail reply url is \'' + returnValue + '\'')
+		log.debug('Reddit main modmail reply url is \'' + returnValue + '\'')
 	
 	closeSqlConnections()
 	
@@ -848,18 +853,23 @@ def getRedditPostUrlFromTicketId(ticketId):
 def mainloop():
 	
 	while True:
-		if debug:
-			print('Waking... Processing modmail.')
+		log.debug('Waking... Processing modmail.')
 			
 		processModMail()
 		
 		if requestTrackerAllowModmailRepliesToBeSentToReddit:
 			processRequestTrackerRepliesToModMail()
 		
-		if debug:
-			print('Modmail processed.  Sleeping...')
+		log.debug('Modmail processed.  Sleeping...')
 			
 		time.sleep(redditSleepIntervalInSecondsBetweenRequests) # sleep x seconds and do it again.
 
-init()
-mainloop()
+
+if __name__ == '__main__':
+	args = arg_parser.parse_args()
+	log_level = logging.INFO
+	if debug:
+		log_level = logging.DEBUG
+	setupLogger(log_level=log_level, log_file=args.logfile)
+	init()
+	mainloop()
