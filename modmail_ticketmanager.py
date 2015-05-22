@@ -132,6 +132,12 @@ arg_parser = argparse.ArgumentParser(description='Modmail / RequestTracker ticke
 arg_parser.add_argument('-l', '--logfile', help='The log file to store output in addition to stdout')
 
 
+def logException():
+  exc_type, exc_value, exc_traceback = sys.exc_info()
+  msg = ['*** print_exc:', traceback.format_exc(), '*** tb_lineno: {}'.format(exc_traceback.tb_lineno)]
+  log.debug('\n'.join(msg))
+
+
 def setupLogger(log_level=logging.INFO, log_file=None):
 	global log
 	logfmt = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%dT%H:%M:%S')
@@ -147,6 +153,7 @@ def setupLogger(log_level=logging.INFO, log_file=None):
 			file_handler.setFormatter(logfmt)
 		except Exception as ex:
 			print('UNABLE TO OPEN LOG {}: {}'.format(log_file, str(ex)))
+			logException()
 			file_handler = None
 	log = logging.getLogger('script')
 	log.addHandler(stdout_handler)
@@ -231,30 +238,7 @@ def processModMail():
 		l = str(sys.exc_traceback.tb_lineno)
 		error = str(datetime.utcnow()) + ' - Error when attempting to review modmail on line number ' + l + '.  Exception:  ' + e
 		log.error(error)
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
+		logException()
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.	
 		pass
 
@@ -375,36 +359,14 @@ def getTicketData(ticketId):
 	
 	except RTResourceError as e:
 		log.error('Failed to get ticket information for ticket id {}.'.format(ticketId))
+		logException()
 		return []
 	except:
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to getTicketData on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
+		logException()
 		return []
 
 def setTicketStateTo(ticketId, newState):
@@ -421,30 +383,7 @@ def setTicketStateTo(ticketId, newState):
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to setTicketStateTo (transitioning the ticket) on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
+		logException()
 		pass
 	
 def transitionTicketToExpectedState(ticketId):
@@ -463,32 +402,7 @@ def transitionTicketToExpectedState(ticketId):
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to transitionTicketToExpectedState on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno
-				))
-			log.debug('\n'.join(msg))
-
+		logException()
 		pass
 	
 		
@@ -662,31 +576,7 @@ def processRequestTrackerRepliesToModMail():
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to process modmail replies on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
-		
+		logException()
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		pass
 
@@ -744,30 +634,7 @@ def checkIfAlreadyHandledModmailReply(ticketId, modmailMessageUrl, replyText):
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to checkIfAlreadyHandledModmailReply on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
+		logException()
 		return False
 		
 	return isAlreadyHandled
@@ -802,31 +669,7 @@ def removeModmailReplyFromTicket(ticketId):
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
 		log.error('Error when attempting to update the ticket on line number {}.  Exception:  {}'.format(l, e))
-		
-		# Go overboard on logging if we are in debug mode.  
-		if debug:
-			exc_type, exc_value, exc_traceback = sys.exc_info()
-			msg = [
-				"*** print_tb:",
-				traceback.format_tb(exc_traceback, limit=1, file=sys.stdout),
-				"*** print_exception:",
-				traceback.format_exception(exc_type, exc_value, exc_traceback, limit=2, file=sys.stdout),
-				"*** print_exc:",
-				traceback.format_exc(),
-				"*** format_exc, first and last line:"]
-			formatted_lines = traceback.format_exc().splitlines()
-			msg.extend((
-				formatted_lines[0],
-				formatted_lines[-1],
-				"*** format_exception:",
-				repr(traceback.format_exception(exc_type, exc_value, exc_traceback)),
-				"*** extract_tb:",
-				repr(traceback.extract_tb(exc_traceback)),
-				"*** format_tb:",
-				repr(traceback.format_tb(exc_traceback)),
-				"*** tb_lineno:", exc_traceback.tb_lineno))
-			log.debug('\n'.join(msg))
-		
+		logException()
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		sys.exit(1)
 
