@@ -5,10 +5,11 @@
 #	Request Tracker (ticket manager) instance.  
 #
 # Dependencies:  
-#	Python
+#	Python - 2.6.8 or higher
 # 	PRAW - You will need to install this yourself. (pip install)
 #	RequestTracker instance - You will need to install and configure this yourself.  (see http://requesttracker.wikia.com/wiki/DebianSqueezeInstallGuide )
 #	Sqlite - You will need to install this yourself.  (apt-get)
+#   argparse - You will need to install this yourself.  (pip install)
 # 	RequestTracker python helper rtkit (pip install)
 #
 # To use, change the relevant items in the #Definitions section.  You should not change
@@ -134,25 +135,25 @@ arg_parser.add_argument('-l', '--logfile', help='The log file to store output in
 
 def logException():
   exc_type, exc_value, exc_traceback = sys.exc_info()
-  msg = ['*** print_exc:', traceback.format_exc(), '*** tb_lineno: {}'.format(exc_traceback.tb_lineno)]
+  msg = ['*** print_exc:', traceback.format_exc(), '*** tb_lineno: {0}'.format(exc_traceback.tb_lineno)]
   log.debug('\n'.join(msg))
 
 
 def setupLogger(log_level=logging.INFO, log_file=None):
 	global log
 	logfmt = logging.Formatter('[%(asctime)s] %(message)s', datefmt='%Y-%m-%dT%H:%M:%S')
-	stdout_handler = logging.StreamHandler(stream=sys.stdout)
+	stdout_handler = logging.StreamHandler(sys.stdout)
 	stdout_handler.setLevel(log_level)
 	stdout_handler.setFormatter(logfmt)
 	file_handler = None
 	if log_file:
 		try:
 			file_h = open(log_file, 'a')
-			file_handler = logging.StreamHandler(stream=file_h)
+			file_handler = logging.StreamHandler(file_h)
 			file_handler.setLevel(log_level)
 			file_handler.setFormatter(logfmt)
 		except Exception as ex:
-			print('UNABLE TO OPEN LOG {}: {}'.format(log_file, str(ex)))
+			print('UNABLE TO OPEN LOG {0}: {1}'.format(log_file, str(ex)))
 			logException()
 			file_handler = None
 	log = logging.getLogger('script')
@@ -316,7 +317,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 			
 		ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
 		
-		log.debug('Added ticket to ticket system - ticket id:  {}'.format(ticketId))
+		log.debug('Added ticket to ticket system - ticket id:  {0}'.format(ticketId))
 		
 		if ticketId < 1:
 			raise LookupError('Did not get back appropriate ticket id to store from ticket system')
@@ -358,14 +359,14 @@ def getTicketData(ticketId):
 		return responseObj
 	
 	except RTResourceError as e:
-		log.error('Failed to get ticket information for ticket id {}.'.format(ticketId))
+		log.error('Failed to get ticket information for ticket id {0}.'.format(ticketId))
 		logException()
 		return []
 	except:
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to getTicketData on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to getTicketData on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		return []
 
@@ -382,7 +383,7 @@ def setTicketStateTo(ticketId, newState):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to setTicketStateTo (transitioning the ticket) on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to setTicketStateTo (transitioning the ticket) on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		pass
 	
@@ -401,7 +402,7 @@ def transitionTicketToExpectedState(ticketId):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to transitionTicketToExpectedState on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to transitionTicketToExpectedState on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		pass
 	
@@ -491,7 +492,7 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 				messageReplyReturn['foundReplyBySomeoneOtherThanTicketManager'] = True
 			
 			log.debug('Reply message not found in system.  Processing.')
-			log.debug('Updating ticket found in our system:  {}'.format(ticketId))
+			log.debug('Updating ticket found in our system:  {0}'.format(ticketId))
 			
 			addTicketComment(ticketId, replyAuthor, replyBody, rootResponseUrl)
 			
@@ -575,7 +576,7 @@ def processRequestTrackerRepliesToModMail():
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to process modmail replies on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to process modmail replies on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		pass
@@ -633,7 +634,7 @@ def checkIfAlreadyHandledModmailReply(ticketId, modmailMessageUrl, replyText):
 		# Do not vulgarly error out.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to checkIfAlreadyHandledModmailReply on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to checkIfAlreadyHandledModmailReply on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		return False
 		
@@ -668,7 +669,7 @@ def removeModmailReplyFromTicket(ticketId):
 		# In this case, we could cause a never ending stream of reddit replies and noone wants that.
 		e = str(sys.exc_info()[0])
 		l = str(sys.exc_traceback.tb_lineno)
-		log.error('Error when attempting to update the ticket on line number {}.  Exception:  {}'.format(l, e))
+		log.error('Error when attempting to update the ticket on line number {0}.  Exception:  {1}'.format(l, e))
 		logException()
 		closeSqlConnections() # in case we have open connections, commit changes and exit.  Changes safe to commit due to order of operations.
 		sys.exit(1)
