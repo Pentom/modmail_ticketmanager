@@ -68,7 +68,12 @@ sqliteDatabaseTablename = 'HandledTickets' # TableName you wish to use for handl
 
 # Request Tracker
 requestTrackerRestApiUrl = 'http://192.168.25.129/rt/REST/1.0/' # Pretty much your url + /Rest/1.0/
-requestTrackerQueueToPostTo = 1 # Tools -> Configuration -> Queues -> Select, whichever queue you wish.
+# General Queue
+requestTrackerQueueToPostTo = 1 # Tools -> Configuration -> Queues -> Select, whichever queue you wish for general messges.
+# Optional Author-Specific Queue
+# If you wish certain root-authors to go to certain queues (automoderator for example), set the mapping up here.
+# same as always though - if the script user doesnt have permission to go there, you will have a bad time.
+
 # Request Tracker - User to use to post.
 requestTrackerUsername = '' 
 requestTrackerPassword = '' 
@@ -296,9 +301,17 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
 	rootReplies   = mail.replies
 	
-	# Early out - If this is automod or reddit, just quit.
-	if rootAuthor.lower() == 'automoderator' or rootAuthor.lower() == 'reddit' or rootSubject.lower() == 'moderator added' or rootSubject.lower() == 'moderator invited':
+	# Early out - If this is reddit, just quit.
+	if rootAuthor.lower() == 'reddit' or rootSubject.lower() == 'moderator added' or rootSubject.lower() == 'moderator invited':
 		return True # Get out and ignore this message.
+		
+	queueIdToCreateTicketsIn = requestTrackerQueueToPostTo # Default Queue
+	
+	for authorQueueMapping in requestTrackerOptionalAuthorToQueueMapping:
+		if rootAuthor.lower() == authorQueueMapping[0].lower():
+			log.debug('Found a matching author-queue mapping, redirecting user to specified queue for ticket creation if needed')
+			queueIdToCreateTicketsIn = authorQueueMapping[1]
+			break
 	
 	# track the newest age value amongst root and replies.
 	messageNewestAge = rootAge
@@ -315,7 +328,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 		
 		log.debug('Core message not found in system.  Processing.')
 			
-		ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl)
+		ticketId = createTicket(rootAuthor, rootSubject, rootBody, rootResponseUrl, queueIdToCreateTicketsIn)
 		
 		log.debug('Added ticket to ticket system - ticket id:  {0}'.format(ticketId))
 		
@@ -505,16 +518,18 @@ def handleMessageReplies(debug, ticketId, rootMessageId, replies, messageNewestA
 # no error handling, let errors bubble up.
 # in - message information
 # out integer ticket id.
-def createTicket(author, subject, body, modmailMessageUrl):
+def createTicket(author, subject, body, modmailMessageUrl, rtQueueId):
 	postedSubject = requestTrackerInitialTicketCreationSubject.replace("{Author}", author).replace("{Subject}", subject).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", body)
 	postedBody = requestTrackerInitialTicketCreationComment.replace("{Author}", author).replace("{Subject}", subject).replace("{ModmailMessageUrl}", modmailMessageUrl).replace("{Content}", body)
 	content = {
 		'content': {
-			'Queue': requestTrackerQueueToPostTo,
+			'Queue': rtQueueId,
 			'Subject': postedSubject,
 			'Text': postedBody,
 		}
 	}
+	
+	log.debug('Creating core ticket for queue:  ' + str(rtQueueId))
 	response = resource.post(path='ticket/new', payload=content,)
 
 	# if this wasnt successful, the following statements will error out and send us down to the catch.
