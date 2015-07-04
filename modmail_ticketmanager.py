@@ -73,6 +73,7 @@ requestTrackerQueueToPostTo = 1 # Tools -> Configuration -> Queues -> Select, wh
 # Optional Author-Specific Queue
 # If you wish certain root-authors to go to certain queues (automoderator for example), set the mapping up here.
 # same as always though - if the script user doesnt have permission to go there, you will have a bad time.
+requestTrackerOptionalAuthorToQueueMapping = [['automoderator',1],['different_user_goes_here',1]] # This example has automod posts going to queue 1.  Can accept multiple author/queue tuples.
 
 # Request Tracker - User to use to post.
 requestTrackerUsername = '' 
