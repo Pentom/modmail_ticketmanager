@@ -299,7 +299,7 @@ def processModMailRootMessage(debug, mail, inExtendedValidationMode):
 	rootSubject   = str(unicodedata.normalize('NFKD', mail.subject).encode('ascii','ignore')) if type(mail.subject) is unicode else str(mail.subject)
 	rootBody      = str(unicodedata.normalize('NFKD', mail.body).encode('ascii','ignore')) if type(mail.body) is unicode else str(mail.body)
 	rootMessageId = str(mail.id) # Base 36, contains alphanumeric
-	rootResponseUrl = 'http://www.reddit.com/message/messages/' + rootMessageId
+	rootResponseUrl = 'https://www.reddit.com/message/messages/' + rootMessageId
 	rootReplies   = mail.replies
 	
 	# Early out - If this is reddit, just quit.
@@ -702,7 +702,7 @@ def getRedditPostUrlFromTicketId(ticketId):
 	sqlrow = sqlCursor.fetchone()
 	if sqlrow != None:
 		log.debug('Found CommentId for ticketId')
-		returnValue = 'http://www.reddit.com/message/messages/' + str(sqlrow[0])
+		returnValue = 'https://www.reddit.com/message/messages/' + str(sqlrow[0])
 		log.debug('Reddit main modmail reply url is \'' + returnValue + '\'')
 	
 	closeSqlConnections()
